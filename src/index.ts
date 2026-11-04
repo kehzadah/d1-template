@@ -248,7 +248,7 @@ export default {
       }
 
       if (request.method !== "GET" && request.method !== "HEAD" && !(
-        (request.method === "POST" && ["/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications/review", "/api/v1/vendor/products"].includes(url.pathname)) ||
+        (request.method === "POST" && ["/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications/review", "/api/v1/vendor/products", "/api/v1/admin/products/review"].includes(url.pathname)) ||
         (request.method === "PATCH" && ["/api/v1/vendor/storefront"].includes(url.pathname)) ||
         (request.method === "PATCH" && url.pathname.startsWith("/api/v1/vendor/products/"))
       )) {
@@ -447,6 +447,35 @@ export default {
         return json({ message: "Vendor booth assigned.", booth: { booth_number: boothNumber, player_id: playerId, booth_name: boothName }, audit_id: auditId });
       }
 
+      if (url.pathname === "/api/v1/admin/products") {
+        const actor = await currentPlayer(request, env);
+        if (!actor) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        if (!await isMallAdmin(actor.player_id, env)) return json({ error: "forbidden", message: "Administrator permission is required." }, 403);
+        const status = url.searchParams.get("status") || "draft";
+        if (!["draft", "published", "all"].includes(status)) return json({ error: "invalid_filter", message: "Status must be draft, published, or all." }, 400);
+        const sql = "SELECT p.product_id, p.booth_number, p.seller_player_id, pl.username AS seller_username, p.name, p.description, p.category, p.subcategory, p.rarity, p.metal, p.photo_key, p.price_cents, p.currency, p.active, p.created_at FROM products p LEFT JOIN players pl ON pl.player_id = p.seller_player_id WHERE p.booth_number IS NOT NULL " + (status === "all" ? "" : status === "draft" ? "AND p.active = 0 " : "AND p.active = 1 ") + "ORDER BY p.created_at DESC LIMIT 100";
+        const result = await env.DB.prepare(sql).all();
+        return json({ data: result.results, count: result.results.length });
+      }
+
+      if (url.pathname === "/api/v1/admin/products/review" && request.method === "POST") {
+        const actor = await currentPlayer(request, env);
+        if (!actor) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        if (!await isMallAdmin(actor.player_id, env)) return json({ error: "forbidden", message: "Administrator permission is required." }, 403);
+        const body = await requestBody(request);
+        const productId = typeof body?.product_id === "string" ? body.product_id : "";
+        const decision = body?.decision;
+        if (!/^product_[A-Fa-f0-9]{32}$/.test(productId) || !["publish", "unpublish"].includes(String(decision))) return json({ error: "invalid_input", message: "Provide a valid product_id and decision (publish or unpublish)." }, 400);
+        const product = await env.DB.prepare("SELECT product_id, booth_number, active FROM products WHERE product_id = ? AND booth_number IS NOT NULL LIMIT 1").bind(productId).first<{ product_id: string; booth_number: number; active: number }>();
+        if (!product) return json({ error: "product_not_found", message: "Vendor product not found." }, 404);
+        const nextActive = decision === "publish" ? 1 : 0;
+        const auditId = `audit_${randomHex(16)}`;
+        const update = await env.DB.prepare("UPDATE products SET active = ? WHERE product_id = ? AND booth_number IS NOT NULL").bind(nextActive, productId).run();
+        if (update.meta.changes !== 1) return json({ error: "update_failed", message: "Product status was not changed." }, 409);
+        await env.DB.prepare("INSERT INTO admin_audit_log (audit_id, actor_player_id, action_key, target_type, target_id, details_json) VALUES (?, ?, ?, 'product', ?, ?)").bind(auditId, actor.player_id, decision === "publish" ? "vendor_product.publish" : "vendor_product.unpublish", productId, JSON.stringify({ booth_number: product.booth_number })).run();
+        return json({ message: decision === "publish" ? "Vendor product published." : "Vendor product unpublished.", product: { product_id: productId, active: nextActive === 1 }, audit_id: auditId });
+      }
+
       if (url.pathname === "/api/v1/admin/vendor-applications") {
         const actor = await currentPlayer(request, env);
         if (!actor) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
@@ -559,7 +588,7 @@ export default {
         return json({ data: results, count: results.length });
       }
 
-      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders", "/api/v1/admin/overview", "/api/v1/admin/players", "/api/v1/admin/vendors", "/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications", "/api/v1/admin/vendor-applications/review", "/api/v1/vendor-applications", "/api/v1/vendor/storefront", "/api/v1/vendor/products"] }, 404);
+      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders", "/api/v1/admin/overview", "/api/v1/admin/players", "/api/v1/admin/vendors", "/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications", "/api/v1/admin/vendor-applications/review", "/api/v1/vendor-applications", "/api/v1/vendor/storefront", "/api/v1/vendor/products", "/api/v1/admin/products", "/api/v1/admin/products/review"] }, 404);
     } catch (error) {
       console.error("CrystalzCrystalz API error:", error);
       return json({ error: "internal_error", message: "The request could not be completed." }, 500);
