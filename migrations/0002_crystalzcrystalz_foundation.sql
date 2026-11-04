@@ -1,7 +1,5 @@
 -- CrystalzCrystalz Virtual Mall backend foundation
 -- Additive migration: preserves the original template comments table.
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS mall_floors (
   floor_number INTEGER PRIMARY KEY CHECK (floor_number BETWEEN 1 AND 3),
   floor_name TEXT NOT NULL,
