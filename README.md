@@ -35,6 +35,10 @@ Cloudflare Worker + D1 foundation for the CrystalzCrystalz Unity virtual mall.
 - `GET /api/v1/admin/players` — recent player accounts and assigned roles; optional `limit` (1–100)
 - `GET /api/v1/admin/vendors` — all vendor booth assignments and activation states
 - `POST /api/v1/admin/vendors/assign` — assign an active player to an unoccupied booth; JSON body: `{ "booth_number": 1, "player_id": "player_...", "booth_name": "Vendor Shop" }`. The operation assigns the `vendor` role and writes an admin audit record in the same D1 batch.
+- `GET /api/v1/admin/vendor-applications?status=pending` — review queue; status can be `pending`, `approved`, `rejected`, or `all`.
+- `POST /api/v1/admin/vendor-applications/review` — approve or reject an application; JSON body: `{ "application_id": "vendorapp_...", "decision": "approve", "review_note": "..." }`. Approval grants the Vendor role but does not automatically assign a booth.
+- `POST /api/v1/vendor-applications` — submit a vendor application as the signed-in player; JSON body: `{ "business_name": "...", "business_description": "...", "product_category": "..." }`.
+- `GET /api/v1/vendor-applications` — read the signed-in player's latest application and review status.
 
 Admin routes require a valid bearer session and the `admin` role. New accounts receive only the `player` role automatically; there is no public role-escalation endpoint. To provision the first administrator, register the intended account, then run this SQL in the connected D1 database console (replace the email with the exact account email):
 
@@ -61,6 +65,8 @@ Inventory, purchases, wallet changes, vendor edits, and payment webhooks remain 
 - `0004_player_authentication.sql` adds password/session and login-rate-limit storage.
 - `0005_store_layouts_and_catalog_rules.sql` adds store zones and fitting-room/category rules.
 - `0006_roles_and_admin_audit.sql` adds player/vendor/moderator/admin roles and an admin audit log.
+- `0007_vendor_applications.sql` adds vendor application records and review state.
+- `0008_vendor_application_uniqueness.sql` prevents multiple pending or approved applications per player.
 
 Store layout data preserves the clothing zones (Streetwear, Luxury, Casual, Glam, fitting rooms), eyewear categories (no fitting rooms), men's handcrafted jewelry restrictions (stud earrings only and no watches), and the approved luxury jewelry categories. Core tables include players, player_profiles, avatars, stores, vendor_booths, store_zones, store_features, products, inventory_items, shopping_carts, cart_items, orders, order_items, wallet_accounts, wallet_ledger, payment_records, audit_events, mall_floors, mall_transit, player_sessions, auth_rate_limits, roles, player_roles, and admin_audit_log.
 
