@@ -18,7 +18,21 @@ Cloudflare Worker + D1 foundation for the CrystalzCrystalz Unity virtual mall.
 - `GET /api/v1/vendors` — twelve Level 3 vendor booths
 - `GET /api/v1/catalog` — active product catalog; optional `store_id`, `booth_number`, and `limit` query parameters
 
-The API is intentionally read-only at this foundation stage. Account creation, authentication, inventory mutations, purchases, wallet changes, and payment webhooks must be implemented with server-side authorization and transaction controls before they are exposed.
+## Player authentication
+
+- `POST /api/v1/auth/register` — create a player account (email, username, password)
+- `POST /api/v1/auth/login` — sign in and receive a bearer session token
+- `GET /api/v1/auth/me` — validate the current session and read the player profile
+- `POST /api/v1/auth/logout` — revoke the current bearer session
+- `GET /api/v1/player/inventory` — read the signed-in player's inventory
+- `GET /api/v1/player/wallet` — read the signed-in player's credit balance
+- `GET /api/v1/player/orders` — read the signed-in player's recent orders
+
+Passwords are stored as PBKDF2-SHA-256 hashes (310,000 iterations with a random salt). Session tokens are random and only their SHA-256 hashes are stored. Login attempts are rate-limited by a hashed email/IP fingerprint.
+
+Registration currently activates an account immediately. Email verification, password reset delivery, administrator role provisioning, and production abuse monitoring are not yet configured. Do not open public registration broadly until those controls are implemented.
+
+Inventory, purchases, wallet changes, vendor edits, and payment webhooks remain unavailable for writes. Those require transactional authorization and audit controls before they are enabled.
 
 ## Database
 
