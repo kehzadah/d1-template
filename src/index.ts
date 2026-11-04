@@ -96,6 +96,14 @@ async function currentPlayer(request: Request, env: Env) {
   ).bind(tokenHash).first<Record<string, unknown>>();
 }
 
+async function isMallAdmin(playerId: unknown, env: Env): Promise<boolean> {
+  if (typeof playerId !== "string") return false;
+  const role = await env.DB.prepare(
+    "SELECT 1 AS allowed FROM player_roles WHERE player_id = ? AND role_key = 'admin' LIMIT 1"
+  ).bind(playerId).first<{ allowed: number }>();
+  return role?.allowed === 1;
+}
+
 async function authRateLimited(request: Request, env: Env, email: string): Promise<boolean> {
   const ip = request.headers.get("cf-connecting-ip") || "unknown";
   const fingerprint = await sha256(email.toLowerCase() + "|" + ip);
@@ -269,6 +277,48 @@ export default {
         return json({ data: results, count: results.length });
       }
 
+      if (url.pathname === "/api/v1/admin/overview") {
+        const player = await currentPlayer(request, env);
+        if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        if (!await isMallAdmin(player.player_id, env)) return json({ error: "forbidden", message: "Administrator permission is required." }, 403);
+        const [players, vendors, products, orders, pendingPayments] = await Promise.all([
+          env.DB.prepare("SELECT COUNT(*) AS total FROM players").first<{ total: number }>(),
+          env.DB.prepare("SELECT COUNT(*) AS total FROM vendor_booths WHERE active = 1").first<{ total: number }>(),
+          env.DB.prepare("SELECT COUNT(*) AS total FROM products WHERE active = 1").first<{ total: number }>(),
+          env.DB.prepare("SELECT COUNT(*) AS total FROM orders").first<{ total: number }>(),
+          env.DB.prepare("SELECT COUNT(*) AS total FROM payment_records WHERE status IN ('pending', 'processing')").first<{ total: number }>(),
+        ]);
+        return json({ overview: {
+          player_accounts: players?.total || 0,
+          active_vendor_booths: vendors?.total || 0,
+          active_products: products?.total || 0,
+          orders: orders?.total || 0,
+          pending_payments: pendingPayments?.total || 0,
+        }});
+      }
+
+      if (url.pathname === "/api/v1/admin/players") {
+        const player = await currentPlayer(request, env);
+        if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        if (!await isMallAdmin(player.player_id, env)) return json({ error: "forbidden", message: "Administrator permission is required." }, 403);
+        const parsedLimit = Number(url.searchParams.get("limit") || 50);
+        const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 100) : 50;
+        const { results } = await env.DB.prepare(
+          "SELECT p.player_id, p.email, p.username, p.account_status, p.created_at, GROUP_CONCAT(pr.role_key, ',') AS roles FROM players p LEFT JOIN player_roles pr ON pr.player_id = p.player_id GROUP BY p.player_id ORDER BY p.created_at DESC LIMIT ?"
+        ).bind(limit).all();
+        return json({ data: results, count: results.length });
+      }
+
+      if (url.pathname === "/api/v1/admin/vendors") {
+        const player = await currentPlayer(request, env);
+        if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        if (!await isMallAdmin(player.player_id, env)) return json({ error: "forbidden", message: "Administrator permission is required." }, 403);
+        const { results } = await env.DB.prepare(
+          "SELECT booth_number, booth_name, vendor_player_id, active, customization_json FROM vendor_booths ORDER BY booth_number"
+        ).all();
+        return json({ data: results, count: results.length });
+      }
+
       if (url.pathname === "/api/v1/floors") {
         const { results } = await env.DB.prepare("SELECT floor_number, floor_name, floor_type, description FROM mall_floors ORDER BY floor_number").all();
         return json({ data: results });
@@ -322,7 +372,7 @@ export default {
         return json({ data: results, count: results.length });
       }
 
-      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders"] }, 404);
+      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders", "/api/v1/admin/overview", "/api/v1/admin/players", "/api/v1/admin/vendors"] }, 404);
     } catch (error) {
       console.error("CrystalzCrystalz API error:", error);
       return json({ error: "internal_error", message: "The request could not be completed." }, 500);
