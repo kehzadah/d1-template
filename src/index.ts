@@ -44,8 +44,8 @@ export default {
             branded_stores_floor: 2,
             vendor_marketplace_floor: 3,
             elevators: [
-              { id: "elevator-a", name: "Elevator A", floors: [1, 2], location: "Right side / Men's Wing" },
-              { id: "elevator-b", name: "Elevator B", floors: [2, 3], location: "Left side / Women's Wing" },
+              { id: "elevator-a", name: "Elevator A", floors: [1, 2], location: "Right side / Men's Wing", position: { x: 14.5, z: 3.4 } },
+              { id: "elevator-b", name: "Elevator B", floors: [2, 3], location: "Left side / Women's Wing", position: { x: -14, z: 12 } },
             ],
             transfer_rule: "Level 2 is the transfer hub; there is no direct Level 1 to Level 3 elevator.",
           },
@@ -62,6 +62,13 @@ export default {
           "SELECT floor_number, floor_name, floor_type, description FROM mall_floors ORDER BY floor_number"
         ).all();
         return json({ data: results });
+      }
+
+      if (url.pathname === "/api/v1/transit") {
+        const { results } = await env.DB.prepare(
+          "SELECT transit_id, elevator_name, location_description, from_floor, to_floor, x, z FROM mall_transit ORDER BY elevator_name"
+        ).all();
+        return json({ data: results, transfer_rule: "Level 2 is the transfer hub; there is no direct Level 1 to Level 3 elevator." });
       }
 
       if (url.pathname === "/api/v1/stores") {
@@ -97,7 +104,7 @@ export default {
       return json({
         error: "not_found",
         message: "Endpoint not found.",
-        available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/stores", "/api/v1/vendors", "/api/v1/catalog"],
+        available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/vendors", "/api/v1/catalog"],
       }, 404);
     } catch (error) {
       console.error("CrystalzCrystalz API error:", error);
