@@ -279,6 +279,23 @@ export default {
         return json({ data: results, transfer_rule: "Level 2 is the transfer hub; there is no direct Level 1 to Level 3 elevator." });
       }
 
+      if (url.pathname === "/api/v1/store-layouts") {
+        const [zoneRows, featureRows] = await Promise.all([
+          env.DB.prepare("SELECT store_id, zone_key, display_name, zone_type, sort_order FROM store_zones ORDER BY store_id, sort_order").all(),
+          env.DB.prepare("SELECT store_id, feature_key, enabled FROM store_features ORDER BY store_id, feature_key").all(),
+        ]);
+        const layouts = new Map<string, { zones: unknown[]; features: Record<string, boolean> }>();
+        for (const row of zoneRows.results as Array<{ store_id: string; zone_key: string; display_name: string; zone_type: string; sort_order: number }>) {
+          if (!layouts.has(row.store_id)) layouts.set(row.store_id, { zones: [], features: {} });
+          layouts.get(row.store_id)!.zones.push({ key: row.zone_key, name: row.display_name, type: row.zone_type, sort_order: row.sort_order });
+        }
+        for (const row of featureRows.results as Array<{ store_id: string; feature_key: string; enabled: number }>) {
+          if (!layouts.has(row.store_id)) layouts.set(row.store_id, { zones: [], features: {} });
+          layouts.get(row.store_id)!.features[row.feature_key] = row.enabled === 1;
+        }
+        return json({ data: Object.fromEntries(layouts) });
+      }
+
       if (url.pathname === "/api/v1/stores") {
         const { results } = await env.DB.prepare("SELECT store_id, floor_number, gender, store_type, display_name FROM stores WHERE active = 1 ORDER BY sort_order").all();
         return json({ data: results, count: results.length });
@@ -305,7 +322,7 @@ export default {
         return json({ data: results, count: results.length });
       }
 
-      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders"] }, 404);
+      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders"] }, 404);
     } catch (error) {
       console.error("CrystalzCrystalz API error:", error);
       return json({ error: "internal_error", message: "The request could not be completed." }, 500);
