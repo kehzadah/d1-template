@@ -242,6 +242,33 @@ export default {
         });
       }
 
+      if (url.pathname === "/api/v1/player/inventory") {
+        const player = await currentPlayer(request, env);
+        if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        const { results } = await env.DB.prepare(
+          "SELECT i.inventory_id, i.product_id, i.quantity, i.acquired_at, p.name, p.description, p.category, p.subcategory, p.rarity, p.metal, p.photo_key FROM inventory_items i JOIN products p ON p.product_id = i.product_id WHERE i.player_id = ? ORDER BY i.acquired_at DESC"
+        ).bind(player.player_id).all();
+        return json({ data: results, count: results.length });
+      }
+
+      if (url.pathname === "/api/v1/player/wallet") {
+        const player = await currentPlayer(request, env);
+        if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        const wallet = await env.DB.prepare(
+          "SELECT balance_credits, updated_at FROM wallet_accounts WHERE player_id = ?"
+        ).bind(player.player_id).first();
+        return json({ wallet: wallet || { balance_credits: 0 } });
+      }
+
+      if (url.pathname === "/api/v1/player/orders") {
+        const player = await currentPlayer(request, env);
+        if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        const { results } = await env.DB.prepare(
+          "SELECT order_id, status, subtotal_cents, tax_cents, total_cents, currency, created_at, updated_at FROM orders WHERE player_id = ? ORDER BY created_at DESC LIMIT 50"
+        ).bind(player.player_id).all();
+        return json({ data: results, count: results.length });
+      }
+
       if (url.pathname === "/api/v1/floors") {
         const { results } = await env.DB.prepare("SELECT floor_number, floor_name, floor_type, description FROM mall_floors ORDER BY floor_number").all();
         return json({ data: results });
@@ -278,7 +305,7 @@ export default {
         return json({ data: results, count: results.length });
       }
 
-      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout"] }, 404);
+      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders"] }, 404);
     } catch (error) {
       console.error("CrystalzCrystalz API error:", error);
       return json({ error: "internal_error", message: "The request could not be completed." }, 500);
