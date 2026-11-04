@@ -247,7 +247,11 @@ export default {
         return json({ message: "Vendor application submitted for review.", application: { application_id: applicationId, status: "pending", business_name: businessName } }, 201);
       }
 
-      if (request.method !== "GET" && request.method !== "HEAD" && !(request.method === "POST" && ["/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications/review"].includes(url.pathname))) {
+      if (request.method !== "GET" && request.method !== "HEAD" && !(
+        (request.method === "POST" && ["/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications/review", "/api/v1/vendor/products"].includes(url.pathname)) ||
+        (request.method === "PATCH" && ["/api/v1/vendor/storefront"].includes(url.pathname)) ||
+        (request.method === "PATCH" && url.pathname.startsWith("/api/v1/vendor/products/"))
+      )) {
         return json({ error: "method_not_allowed", message: "This endpoint does not accept that method." }, 405);
       }
 
@@ -296,6 +300,92 @@ export default {
           "SELECT order_id, status, subtotal_cents, tax_cents, total_cents, currency, created_at, updated_at FROM orders WHERE player_id = ? ORDER BY created_at DESC LIMIT 50"
         ).bind(player.player_id).all();
         return json({ data: results, count: results.length });
+      }
+
+      if (url.pathname === "/api/v1/vendor/storefront" || url.pathname === "/api/v1/vendor/products" || url.pathname.startsWith("/api/v1/vendor/products/")) {
+        const vendor = await currentPlayer(request, env);
+        if (!vendor) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        const vendorRole = await env.DB.prepare("SELECT 1 AS allowed FROM player_roles WHERE player_id = ? AND role_key = 'vendor' LIMIT 1").bind(vendor.player_id).first<{ allowed: number }>();
+        if (!vendorRole) return json({ error: "forbidden", message: "An approved vendor account is required." }, 403);
+        const booth = await env.DB.prepare("SELECT booth_number, booth_name, customization_json FROM vendor_booths WHERE vendor_player_id = ? AND active = 1 LIMIT 1").bind(vendor.player_id).first<{ booth_number: number; booth_name: string; customization_json: string }>();
+        if (!booth) return json({ error: "booth_not_assigned", message: "Your vendor application is approved, but an administrator must assign your booth before you can manage a storefront." }, 409);
+
+        if (url.pathname === "/api/v1/vendor/storefront" && request.method === "GET") {
+          const { results } = await env.DB.prepare("SELECT product_id, name, description, category, subcategory, rarity, metal, photo_key, price_cents, currency, active, created_at FROM products WHERE booth_number = ? AND seller_player_id = ? ORDER BY created_at DESC").bind(booth.booth_number, vendor.player_id).all();
+          let customization: Record<string, unknown> = {};
+          try { const parsed = JSON.parse(booth.customization_json); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) customization = parsed; } catch {}
+          return json({ storefront: { booth_number: booth.booth_number, booth_name: booth.booth_name, customization }, products: results, product_count: results.length });
+        }
+
+        if (url.pathname === "/api/v1/vendor/storefront" && request.method === "PATCH") {
+          const body = await requestBody(request);
+          if (!body) return json({ error: "invalid_input", message: "A JSON object is required." }, 400);
+          const allowedKeys = ["theme", "accent_color", "background_color", "logo_photo_key", "banner_photo_key", "welcome_message"];
+          const customization: Record<string, string> = {};
+          for (const key of allowedKeys) {
+            if (body[key] === undefined) continue;
+            if (typeof body[key] !== "string" || body[key].length > (key === "welcome_message" ? 240 : 160)) return json({ error: "invalid_input", message: `Invalid storefront field: ${key}.` }, 400);
+            customization[key] = body[key].trim();
+          }
+          if (Object.keys(customization).length === 0) return json({ error: "empty_update", message: "Provide at least one supported storefront field." }, 400);
+          let existing: Record<string, unknown> = {};
+          try { const parsed = JSON.parse(booth.customization_json); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) existing = parsed; } catch {}
+          const merged = { ...existing, ...customization };
+          const auditId = `audit_${randomHex(16)}`;
+          await env.DB.batch([
+            env.DB.prepare("UPDATE vendor_booths SET customization_json = ? WHERE booth_number = ? AND vendor_player_id = ?").bind(JSON.stringify(merged), booth.booth_number, vendor.player_id),
+            env.DB.prepare("INSERT INTO admin_audit_log (audit_id, actor_player_id, action_key, target_type, target_id, details_json) VALUES (?, ?, 'vendor.storefront.update', 'vendor_booth', ?, ?)").bind(auditId, vendor.player_id, String(booth.booth_number), JSON.stringify({ changed_fields: Object.keys(customization) })),
+          ]);
+          return json({ message: "Storefront updated.", storefront: { booth_number: booth.booth_number, customization: merged }, audit_id: auditId });
+        }
+
+        if (url.pathname === "/api/v1/vendor/products" && request.method === "POST") {
+          const body = await requestBody(request);
+          const name = typeof body?.name === "string" ? body.name.trim() : "";
+          const description = typeof body?.description === "string" ? body.description.trim() : "";
+          const category = typeof body?.category === "string" ? body.category.trim() : "";
+          const subcategory = typeof body?.subcategory === "string" ? body.subcategory.trim() : "";
+          const rarity = typeof body?.rarity === "string" ? body.rarity.toLowerCase() : "common";
+          const metal = body?.metal === undefined || body.metal === null || body.metal === "" ? null : String(body.metal).toLowerCase();
+          const price = Number(body?.price_cents);
+          const photoKey = typeof body?.photo_key === "string" ? body.photo_key.trim() : null;
+          if (name.length < 2 || name.length > 100 || description.length > 2000 || category.length < 2 || category.length > 60 || subcategory.length > 60 || !["common","rare","epic","legendary","mythic"].includes(rarity) || (metal !== null && !["gold","silver"].includes(metal)) || !Number.isInteger(price) || price < 0 || price > 100000000 || (photoKey !== null && photoKey.length > 300)) {
+            return json({ error: "invalid_input", message: "Check product name, description, category, rarity, metal (gold or silver), photo key, and price in cents." }, 400);
+          }
+          const productId = `product_${randomHex(16)}`;
+          const auditId = `audit_${randomHex(16)}`;
+          await env.DB.batch([
+            env.DB.prepare("INSERT INTO products (product_id, booth_number, seller_player_id, name, description, category, subcategory, rarity, metal, photo_key, price_cents, currency, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', 0)").bind(productId, booth.booth_number, vendor.player_id, name, description, category, subcategory, rarity, metal, photoKey, price),
+            env.DB.prepare("INSERT INTO admin_audit_log (audit_id, actor_player_id, action_key, target_type, target_id, details_json) VALUES (?, ?, 'vendor.product.create', 'product', ?, ?)").bind(auditId, vendor.player_id, productId, JSON.stringify({ booth_number: booth.booth_number, initial_status: "draft" })),
+          ]);
+          return json({ message: "Product draft created. It is not visible in the public catalog until activated by an authorized catalog administrator.", product: { product_id: productId, name, active: false }, audit_id: auditId }, 201);
+        }
+
+        if (url.pathname.startsWith("/api/v1/vendor/products/") && request.method === "PATCH") {
+          const productId = decodeURIComponent(url.pathname.slice("/api/v1/vendor/products/".length));
+          if (!/^product_[A-Fa-f0-9]{32}$/.test(productId)) return json({ error: "invalid_product_id", message: "Product ID is invalid." }, 400);
+          const body = await requestBody(request);
+          if (!body) return json({ error: "invalid_input", message: "A JSON object is required." }, 400);
+          const product = await env.DB.prepare("SELECT product_id, name, description, category, subcategory, rarity, metal, photo_key, price_cents FROM products WHERE product_id = ? AND booth_number = ? AND seller_player_id = ? LIMIT 1").bind(productId, booth.booth_number, vendor.player_id).first<Record<string, unknown>>();
+          if (!product) return json({ error: "product_not_found", message: "Product not found in your assigned booth." }, 404);
+          const fields: Record<string, unknown> = {};
+          for (const key of ["name","description","category","subcategory","rarity","metal","photo_key","price_cents"]) if (body[key] !== undefined) fields[key] = body[key];
+          const merged = { ...product, ...fields };
+          const name = typeof merged.name === "string" ? merged.name.trim() : "";
+          const description = typeof merged.description === "string" ? merged.description.trim() : "";
+          const category = typeof merged.category === "string" ? merged.category.trim() : "";
+          const rarity = typeof merged.rarity === "string" ? merged.rarity.toLowerCase() : "";
+          const metal = merged.metal === null || merged.metal === "" ? null : typeof merged.metal === "string" ? merged.metal.toLowerCase() : "invalid";
+          const price = Number(merged.price_cents);
+          const photoKey = merged.photo_key === null || merged.photo_key === "" ? null : typeof merged.photo_key === "string" ? merged.photo_key.trim() : "invalid";
+          if (name.length < 2 || name.length > 100 || description.length > 2000 || category.length < 2 || category.length > 60 || !["common","rare","epic","legendary","mythic"].includes(rarity) || (metal !== null && !["gold","silver"].includes(metal)) || !Number.isInteger(price) || price < 0 || price > 100000000 || (photoKey !== null && photoKey.length > 300)) return json({ error: "invalid_input", message: "One or more product fields are invalid." }, 400);
+          const auditId = `audit_${randomHex(16)}`;
+          await env.DB.batch([
+            env.DB.prepare("UPDATE products SET name = ?, description = ?, category = ?, subcategory = ?, rarity = ?, metal = ?, photo_key = ?, price_cents = ? WHERE product_id = ? AND booth_number = ? AND seller_player_id = ?").bind(name, description, category, String(merged.subcategory || ""), rarity, metal, photoKey, price, productId, booth.booth_number, vendor.player_id),
+            env.DB.prepare("INSERT INTO admin_audit_log (audit_id, actor_player_id, action_key, target_type, target_id, details_json) VALUES (?, ?, 'vendor.product.update', 'product', ?, ?)").bind(auditId, vendor.player_id, productId, JSON.stringify({ changed_fields: Object.keys(fields) })),
+          ]);
+          return json({ message: "Product draft updated.", product: { product_id: productId, name, active: false }, audit_id: auditId });
+        }
       }
 
       if (url.pathname === "/api/v1/admin/overview") {
@@ -469,7 +559,7 @@ export default {
         return json({ data: results, count: results.length });
       }
 
-      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders", "/api/v1/admin/overview", "/api/v1/admin/players", "/api/v1/admin/vendors", "/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications", "/api/v1/admin/vendor-applications/review", "/api/v1/vendor-applications"] }, 404);
+      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders", "/api/v1/admin/overview", "/api/v1/admin/players", "/api/v1/admin/vendors", "/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications", "/api/v1/admin/vendor-applications/review", "/api/v1/vendor-applications", "/api/v1/vendor/storefront", "/api/v1/vendor/products"] }, 404);
     } catch (error) {
       console.error("CrystalzCrystalz API error:", error);
       return json({ error: "internal_error", message: "The request could not be completed." }, 500);
