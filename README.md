@@ -34,6 +34,7 @@ Cloudflare Worker + D1 foundation for the CrystalzCrystalz Unity virtual mall.
 - `GET /api/v1/admin/overview` — account, vendor booth, catalog, order, and pending-payment counts
 - `GET /api/v1/admin/players` — recent player accounts and assigned roles; optional `limit` (1–100)
 - `GET /api/v1/admin/vendors` — all vendor booth assignments and activation states
+- `POST /api/v1/admin/vendors/assign` — assign an active player to an unoccupied booth; JSON body: `{ "booth_number": 1, "player_id": "player_...", "booth_name": "Vendor Shop" }`. The operation assigns the `vendor` role and writes an admin audit record in the same D1 batch.
 
 Admin routes require a valid bearer session and the `admin` role. New accounts receive only the `player` role automatically; there is no public role-escalation endpoint. To provision the first administrator, register the intended account, then run this SQL in the connected D1 database console (replace the email with the exact account email):
 
