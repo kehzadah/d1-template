@@ -309,6 +309,33 @@ export default {
         return json({ data: results, count: results.length });
       }
 
+      if (url.pathname === "/api/v1/admin/vendors/assign" && request.method === "POST") {
+        const actor = await currentPlayer(request, env);
+        if (!actor) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        if (!await isMallAdmin(actor.player_id, env)) return json({ error: "forbidden", message: "Administrator permission is required." }, 403);
+        const body = await requestBody(request);
+        const boothNumber = Number(body?.booth_number);
+        const playerId = body?.player_id;
+        const boothName = typeof body?.booth_name === "string" ? body.booth_name.trim() : "";
+        if (!Number.isInteger(boothNumber) || boothNumber < 1 || boothNumber > 12 || typeof playerId !== "string" || playerId.length > 100 || boothName.length < 2 || boothName.length > 40) {
+          return json({ error: "invalid_input", message: "Provide booth_number (1–12), player_id, and booth_name (2–40 characters)." }, 400);
+        }
+        const [targetPlayer, booth] = await Promise.all([
+          env.DB.prepare("SELECT player_id, account_status FROM players WHERE player_id = ? LIMIT 1").bind(playerId).first<{ player_id: string; account_status: string }>(),
+          env.DB.prepare("SELECT booth_number, vendor_player_id FROM vendor_booths WHERE booth_number = ? LIMIT 1").bind(boothNumber).first<{ booth_number: number; vendor_player_id: string | null }>(),
+        ]);
+        if (!targetPlayer || targetPlayer.account_status !== "active") return json({ error: "player_not_available", message: "The selected player account does not exist or is not active." }, 404);
+        if (!booth) return json({ error: "booth_not_found", message: "That vendor booth does not exist." }, 404);
+        if (booth.vendor_player_id && booth.vendor_player_id !== playerId) return json({ error: "booth_occupied", message: "That booth is already assigned. Revoke its assignment before reusing it." }, 409);
+        const auditId = `audit_${randomHex(16)}`;
+        await env.DB.batch([
+          env.DB.prepare("UPDATE vendor_booths SET vendor_player_id = ?, booth_name = ?, active = 1 WHERE booth_number = ?").bind(playerId, boothName, boothNumber),
+          env.DB.prepare("INSERT OR IGNORE INTO player_roles (player_id, role_key, assigned_by) VALUES (?, 'vendor', ?)").bind(playerId, actor.player_id),
+          env.DB.prepare("INSERT INTO admin_audit_log (audit_id, actor_player_id, action_key, target_type, target_id, details_json) VALUES (?, ?, 'vendor_booth.assign', 'vendor_booth', ?, ?)").bind(auditId, actor.player_id, String(boothNumber), JSON.stringify({ player_id: playerId, booth_name: boothName })),
+        ]);
+        return json({ message: "Vendor booth assigned.", booth: { booth_number: boothNumber, player_id: playerId, booth_name: boothName }, audit_id: auditId });
+      }
+
       if (url.pathname === "/api/v1/admin/vendors") {
         const player = await currentPlayer(request, env);
         if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
@@ -372,7 +399,7 @@ export default {
         return json({ data: results, count: results.length });
       }
 
-      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders", "/api/v1/admin/overview", "/api/v1/admin/players", "/api/v1/admin/vendors"] }, 404);
+      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders", "/api/v1/admin/overview", "/api/v1/admin/players", "/api/v1/admin/vendors", "/api/v1/admin/vendors/assign"] }, 404);
     } catch (error) {
       console.error("CrystalzCrystalz API error:", error);
       return json({ error: "internal_error", message: "The request could not be completed." }, 500);
