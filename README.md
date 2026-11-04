@@ -13,6 +13,7 @@ Cloudflare Worker + D1 foundation for the CrystalzCrystalz Unity virtual mall.
 - `GET /health` — Worker and D1 health check
 - `GET /api/v1/config` — locked mall configuration
 - `GET /api/v1/floors` — three mall floors
+- `GET /api/v1/transit` — elevator connections and approved coordinates
 - `GET /api/v1/stores` — eight branded retail stores
 - `GET /api/v1/vendors` — twelve Level 3 vendor booths
 - `GET /api/v1/catalog` — active product catalog; optional `store_id`, `booth_number`, and `limit` query parameters
