@@ -226,7 +226,7 @@ export default {
         return json({ message: "Signed out." });
       }
 
-      if (request.method !== "GET" && request.method !== "HEAD") {
+      if (request.method !== "GET" && request.method !== "HEAD" && !(request.method === "POST" && url.pathname === "/api/v1/admin/vendors/assign")) {
         return json({ error: "method_not_allowed", message: "This endpoint does not accept that method." }, 405);
       }
 
