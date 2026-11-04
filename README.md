@@ -34,11 +34,22 @@ Cloudflare Worker + D1 foundation for the CrystalzCrystalz Unity virtual mall.
 - `GET /api/v1/admin/overview` — account, vendor booth, catalog, order, and pending-payment counts
 - `GET /api/v1/admin/players` — recent player accounts and assigned roles; optional `limit` (1–100)
 - `GET /api/v1/admin/vendors` — all vendor booth assignments and activation states
+- `GET /api/v1/admin/products?status=draft` — review vendor product drafts; status can be `draft`, `published`, or `all`.
+- `POST /api/v1/admin/products/review` — publish or unpublish a vendor product; JSON body: `{ "product_id": "product_...", "decision": "publish" }`.
 - `POST /api/v1/admin/vendors/assign` — assign an active player to an unoccupied booth; JSON body: `{ "booth_number": 1, "player_id": "player_...", "booth_name": "Vendor Shop" }`. The operation assigns the `vendor` role and writes an admin audit record in the same D1 batch.
 - `GET /api/v1/admin/vendor-applications?status=pending` — review queue; status can be `pending`, `approved`, `rejected`, or `all`.
 - `POST /api/v1/admin/vendor-applications/review` — approve or reject an application; JSON body: `{ "application_id": "vendorapp_...", "decision": "approve", "review_note": "..." }`. Approval grants the Vendor role but does not automatically assign a booth.
 - `POST /api/v1/vendor-applications` — submit a vendor application as the signed-in player; JSON body: `{ "business_name": "...", "business_description": "...", "product_category": "..." }`.
 - `GET /api/v1/vendor-applications` — read the signed-in player's latest application and review status.
+
+## Vendor storefront and product drafts
+
+- `GET /api/v1/vendor/storefront` — read the assigned booth, customization, and the vendor's own products.
+- `PATCH /api/v1/vendor/storefront` — update supported storefront fields: `theme`, `accent_color`, `background_color`, `logo_photo_key`, `banner_photo_key`, and `welcome_message`.
+- `POST /api/v1/vendor/products` — create a product draft with name, description, category, subcategory, rarity, metal, photo key, and price in cents.
+- `PATCH /api/v1/vendor/products/{product_id}` — edit a product draft owned by the signed-in vendor.
+
+New vendor products start unpublished. An administrator must publish them before they appear in the public catalog. Photo keys are storage references only; image upload and storage delivery are not implemented yet. Vendors can manage only products attached to their assigned booth.
 
 Admin routes require a valid bearer session and the `admin` role. New accounts receive only the `player` role automatically; there is no public role-escalation endpoint. To provision the first administrator, register the intended account, then run this SQL in the connected D1 database console (replace the email with the exact account email):
 
