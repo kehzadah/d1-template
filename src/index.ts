@@ -226,7 +226,28 @@ export default {
         return json({ message: "Signed out." });
       }
 
-      if (request.method !== "GET" && request.method !== "HEAD" && !(request.method === "POST" && url.pathname === "/api/v1/admin/vendors/assign")) {
+      if (url.pathname === "/api/v1/vendor-applications" && request.method === "POST") {
+        const player = await currentPlayer(request, env);
+        if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        const body = await requestBody(request);
+        const businessName = typeof body?.business_name === "string" ? body.business_name.trim() : "";
+        const description = typeof body?.business_description === "string" ? body.business_description.trim() : "";
+        const category = typeof body?.product_category === "string" ? body.product_category.trim() : "";
+        if (businessName.length < 2 || businessName.length > 60 || description.length < 20 || description.length > 1000 || category.length < 2 || category.length > 60) {
+          return json({ error: "invalid_input", message: "Provide a business name (2–60 characters), description (20–1,000 characters), and product category (2–60 characters)." }, 400);
+        }
+        const existing = await env.DB.prepare(
+          "SELECT application_id, status FROM vendor_applications WHERE player_id = ? AND status IN ('pending','approved') ORDER BY created_at DESC LIMIT 1"
+        ).bind(player.player_id).first<{ application_id: string; status: string }>();
+        if (existing) return json({ error: "application_exists", message: "You already have a pending or approved vendor application.", application: existing }, 409);
+        const applicationId = `vendorapp_${randomHex(16)}`;
+        await env.DB.prepare(
+          "INSERT INTO vendor_applications (application_id, player_id, business_name, business_description, product_category) VALUES (?, ?, ?, ?, ?)"
+        ).bind(applicationId, player.player_id, businessName, description, category).run();
+        return json({ message: "Vendor application submitted for review.", application: { application_id: applicationId, status: "pending", business_name: businessName } }, 201);
+      }
+
+      if (request.method !== "GET" && request.method !== "HEAD" && !(request.method === "POST" && ["/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications/review"].includes(url.pathname))) {
         return json({ error: "method_not_allowed", message: "This endpoint does not accept that method." }, 405);
       }
 
@@ -336,6 +357,55 @@ export default {
         return json({ message: "Vendor booth assigned.", booth: { booth_number: boothNumber, player_id: playerId, booth_name: boothName }, audit_id: auditId });
       }
 
+      if (url.pathname === "/api/v1/admin/vendor-applications") {
+        const actor = await currentPlayer(request, env);
+        if (!actor) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        if (!await isMallAdmin(actor.player_id, env)) return json({ error: "forbidden", message: "Administrator permission is required." }, 403);
+        const status = url.searchParams.get("status") || "pending";
+        if (!["pending", "approved", "rejected", "all"].includes(status)) return json({ error: "invalid_filter", message: "Status must be pending, approved, rejected, or all." }, 400);
+        const sql = "SELECT a.application_id, a.player_id, p.username, p.email, a.business_name, a.business_description, a.product_category, a.status, a.review_note, a.created_at, a.reviewed_at, a.reviewed_by FROM vendor_applications a JOIN players p ON p.player_id = a.player_id " + (status === "all" ? "" : "WHERE a.status = ? ") + "ORDER BY a.created_at DESC LIMIT 100";
+        const result = status === "all" ? await env.DB.prepare(sql).all() : await env.DB.prepare(sql).bind(status).all();
+        return json({ data: result.results, count: result.results.length });
+      }
+
+      if (url.pathname === "/api/v1/vendor-applications" && request.method === "GET") {
+        const player = await currentPlayer(request, env);
+        if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        const application = await env.DB.prepare(
+          "SELECT application_id, business_name, business_description, product_category, status, review_note, created_at, reviewed_at FROM vendor_applications WHERE player_id = ? ORDER BY created_at DESC LIMIT 1"
+        ).bind(player.player_id).first();
+        return json({ application: application || null });
+      }
+
+      if (url.pathname === "/api/v1/admin/vendor-applications/review" && request.method === "POST") {
+        const actor = await currentPlayer(request, env);
+        if (!actor) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
+        if (!await isMallAdmin(actor.player_id, env)) return json({ error: "forbidden", message: "Administrator permission is required." }, 403);
+        const body = await requestBody(request);
+        const applicationId = typeof body?.application_id === "string" ? body.application_id : "";
+        const decision = body?.decision;
+        const reviewNote = typeof body?.review_note === "string" ? body.review_note.trim() : "";
+        if (!applicationId || applicationId.length > 100 || !["approve", "reject"].includes(String(decision)) || reviewNote.length > 500) {
+          return json({ error: "invalid_input", message: "Provide application_id, decision (approve or reject), and an optional review_note up to 500 characters." }, 400);
+        }
+        const application = await env.DB.prepare(
+          "SELECT application_id, player_id, status FROM vendor_applications WHERE application_id = ? LIMIT 1"
+        ).bind(applicationId).first<{ application_id: string; player_id: string; status: string }>();
+        if (!application) return json({ error: "application_not_found", message: "Vendor application not found." }, 404);
+        if (application.status !== "pending") return json({ error: "application_already_reviewed", message: "Only pending applications can be reviewed." }, 409);
+        const nextStatus = decision === "approve" ? "approved" : "rejected";
+        const update = await env.DB.prepare(
+          "UPDATE vendor_applications SET status = ?, reviewed_by = ?, review_note = ?, reviewed_at = datetime('now') WHERE application_id = ? AND status = 'pending'"
+        ).bind(nextStatus, actor.player_id, reviewNote || null, applicationId).run();
+        if (update.meta.changes !== 1) return json({ error: "application_already_reviewed", message: "Another administrator has already reviewed this application." }, 409);
+        const auditId = `audit_${randomHex(16)}`;
+        await env.DB.batch([
+          ...(nextStatus === "approved" ? [env.DB.prepare("INSERT OR IGNORE INTO player_roles (player_id, role_key, assigned_by) VALUES (?, 'vendor', ?)").bind(application.player_id, actor.player_id)] : []),
+          env.DB.prepare("INSERT INTO admin_audit_log (audit_id, actor_player_id, action_key, target_type, target_id, details_json) VALUES (?, ?, ?, 'vendor_application', ?, ?)").bind(auditId, actor.player_id, `vendor_application.${nextStatus}`, applicationId, JSON.stringify({ player_id: application.player_id, review_note: reviewNote || null })),
+        ]);
+        return json({ message: `Vendor application ${nextStatus}.`, application: { application_id: applicationId, status: nextStatus }, audit_id: auditId });
+      }
+
       if (url.pathname === "/api/v1/admin/vendors") {
         const player = await currentPlayer(request, env);
         if (!player) return json({ error: "unauthorized", message: "A valid player session is required." }, 401);
@@ -399,7 +469,7 @@ export default {
         return json({ data: results, count: results.length });
       }
 
-      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders", "/api/v1/admin/overview", "/api/v1/admin/players", "/api/v1/admin/vendors", "/api/v1/admin/vendors/assign"] }, 404);
+      return json({ error: "not_found", message: "Endpoint not found.", available_endpoints: ["/health", "/api/v1/config", "/api/v1/floors", "/api/v1/transit", "/api/v1/stores", "/api/v1/store-layouts", "/api/v1/vendors", "/api/v1/catalog", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/player/inventory", "/api/v1/player/wallet", "/api/v1/player/orders", "/api/v1/admin/overview", "/api/v1/admin/players", "/api/v1/admin/vendors", "/api/v1/admin/vendors/assign", "/api/v1/admin/vendor-applications", "/api/v1/admin/vendor-applications/review", "/api/v1/vendor-applications"] }, 404);
     } catch (error) {
       console.error("CrystalzCrystalz API error:", error);
       return json({ error: "internal_error", message: "The request could not be completed." }, 500);
